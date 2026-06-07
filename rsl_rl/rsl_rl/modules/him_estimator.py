@@ -9,12 +9,9 @@ class HIMEstimator(nn.Module):
                  temporal_steps,
                  num_one_step_obs,
                  enc_hidden_dims=[128, 64, 16],
-                 tar_hidden_dims=[128, 64],   # kept for config compatibility, unused
                  activation='elu',
                  learning_rate=1e-3,
                  max_grad_norm=10.0,
-                 num_prototype=32,            # kept for config compatibility, unused
-                 temperature=3.0,            # kept for config compatibility, unused
                  kl_weight=1.0,
                  **kwargs):
         if kwargs:
