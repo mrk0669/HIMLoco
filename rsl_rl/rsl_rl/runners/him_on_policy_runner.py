@@ -80,6 +80,8 @@ class HIMOnPolicyRunner:
         self.tot_timesteps = 0
         self.tot_time = 0
         self.current_learning_iteration = 0
+        self.best_reward    = -float('inf')
+        self.best_model_path = None
 
         _, _ = self.env.reset()
     
@@ -145,9 +147,27 @@ class HIMOnPolicyRunner:
             if self.log_dir is not None:
                 self.log(locals())
             if it % self.save_interval == 0:
-                self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
+                cur_path = os.path.join(self.log_dir, 'model_{}.pt'.format(it))
+                self.save(cur_path)
+
+                # Delete previous checkpoint (keep only latest + best)
+                prev_it = it - self.save_interval
+                if prev_it > 0:
+                    prev_path = os.path.join(self.log_dir, 'model_{}.pt'.format(prev_it))
+                    if os.path.exists(prev_path) and prev_path != self.best_model_path:
+                        os.remove(prev_path)
+
+                # Track best model by mean reward
+                if len(rewbuffer) > 0:
+                    cur_reward = statistics.mean(rewbuffer)
+                    if cur_reward > self.best_reward:
+                        self.best_reward = cur_reward
+                        self.best_model_path = os.path.join(self.log_dir, 'model_best.pt')
+                        self.save(self.best_model_path)
+                        print(f'  ** New best model saved: reward={cur_reward:.2f} at iter {it}')
+
             ep_infos.clear()
-        
+
         self.current_learning_iteration += num_learning_iterations
         self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
 
@@ -240,7 +260,14 @@ class HIMOnPolicyRunner:
 
     def load(self, path, load_optimizer=True):
         loaded_dict = torch.load(path)
-        self.alg.actor_critic.load_state_dict(loaded_dict['model_state_dict'])
+        # strict=False: allows loading partial weights
+        # old checkpoints (no decoder) load encoder+PPO, decoder stays random
+        missing, unexpected = self.alg.actor_critic.load_state_dict(
+            loaded_dict['model_state_dict'], strict=False)
+        if missing:
+            print(f'[load] Missing keys (will init randomly): {missing}')
+        if unexpected:
+            print(f'[load] Unexpected keys (ignored): {unexpected}')
         if load_optimizer:
             self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
             self.alg.actor_critic.estimator.optimizer.load_state_dict(loaded_dict['estimator_optimizer_state_dict'])
