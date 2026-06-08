@@ -35,6 +35,14 @@ class HIMEstimator(nn.Module):
         enc_layers += [nn.Linear(enc_input_dim, 3 + self.num_latent * 2)]
         self.encoder = nn.Sequential(*enc_layers)
 
+        # Decoder: vel(3) + z(num_latent) -> next_obs(num_one_step_obs)
+        dec_input_dim = 3 + self.num_latent   # 19
+        self.decoder = nn.Sequential(
+            nn.Linear(dec_input_dim, 64),  activation_fn,
+            nn.Linear(64, 128),            activation_fn,
+            nn.Linear(128, self.num_one_step_obs)   # 45
+        )
+
         self.learning_rate = learning_rate
         self.optimizer = optim.Adam(self.parameters(), lr=self.learning_rate)
 
@@ -69,23 +77,33 @@ class HIMEstimator(nn.Module):
                 param_group['lr'] = self.learning_rate
 
         # Ground-truth velocity from privileged obs
-        vel_gt = next_critic_obs[:, self.num_one_step_obs:self.num_one_step_obs + 3].detach()
+        vel_gt       = next_critic_obs[:, self.num_one_step_obs:self.num_one_step_obs + 3].detach()
 
-        pred_vel, mu, logvar, _ = self.encode(obs_history)
+        # Ground-truth next observation (first num_one_step_obs dims of next_critic_obs)
+        next_obs_gt  = next_critic_obs[:, :self.num_one_step_obs].detach()
 
-        estimation_loss = F.mse_loss(pred_vel, vel_gt)
+        pred_vel, mu, logvar, z = self.encode(obs_history)
+
+        # Decode: reconstruct next observation from vel + z
+        dec_input  = torch.cat([pred_vel, z], dim=-1)   # (batch, 19)
+        pred_next_obs = self.decoder(dec_input)          # (batch, 45)
+
+        estimation_loss  = F.mse_loss(pred_vel, vel_gt)
 
         # KL divergence: D_KL( N(mu, sigma) || N(0,1) )
-        kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+        kl_loss          = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
 
-        loss = estimation_loss + self.kl_weight * kl_loss
+        # Reconstruction loss: predicted next obs vs actual next obs
+        recon_loss       = F.mse_loss(pred_next_obs, next_obs_gt)
+
+        loss = estimation_loss + self.kl_weight * kl_loss + recon_loss
 
         self.optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(self.parameters(), self.max_grad_norm)
         self.optimizer.step()
 
-        return estimation_loss.item(), kl_loss.item()
+        return estimation_loss.item(), kl_loss.item(), recon_loss.item()
 
 
 def get_activation(act_name):
